@@ -21,12 +21,17 @@ app = Flask(__name__)
 
 def parse_lista_pasti(pdf_bytes):
     data = {}
+    pdf_date = None
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         full_text = ""
         for page in pdf.pages:
             t = page.extract_text()
             if t:
                 full_text += t + "\n"
+    # Extract date from PDF header
+    date_match = re.search(r'Data dal (\d{2}/\d{2}/\d{4})', full_text)
+    if date_match:
+        pdf_date = date_match.group(1)
 
     lines = full_text.split('\n')
     # Flexible pattern: cam-name [optional note text] 5 numbers
@@ -49,7 +54,7 @@ def parse_lista_pasti(pdf_bytes):
                 'colaz': m.group(7),
                 'cena': m.group(8),
             }
-    return data
+    return data, pdf_date
 
 
 def parse_arrivi_sala(pdf_bytes):
@@ -687,7 +692,7 @@ def genera():
         b1 = f1.read()
         b2 = f2.read()
 
-        pasti  = parse_lista_pasti(b1)
+        pasti, pdf_date  = parse_lista_pasti(b1)
         arrivi = parse_arrivi_sala(b2)
 
         if not pasti:
@@ -697,14 +702,16 @@ def genera():
 
         merged = merge_data(pasti, arrivi)
 
-        today = datetime.now().strftime('%d/%m/%Y')
-        pdf_buf = generate_pdf(merged, today)
+        # Use date from PDF, fallback to today if not found
+        data_str = pdf_date if pdf_date else datetime.now().strftime('%d/%m/%Y')
+        file_date = data_str.replace('/', '') if pdf_date else datetime.now().strftime('%Y%m%d')
+        pdf_buf = generate_pdf(merged, data_str)
 
         return send_file(
             pdf_buf,
             mimetype='application/pdf',
             as_attachment=True,
-            download_name=f'lista_sala_{datetime.now().strftime("%Y%m%d")}.pdf'
+            download_name=f'lista_sala_{file_date}.pdf'
         )
 
     except Exception as e:
