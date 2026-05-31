@@ -20,7 +20,8 @@ app = Flask(__name__)
 # ─────────────────────────────────────────────
 
 def parse_lista_pasti(pdf_bytes):
-    data = {}
+    # Returns an ORDERED LIST to support multiple guests per camera
+    rows = []
     pdf_date = None
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         full_text = ""
@@ -34,7 +35,6 @@ def parse_lista_pasti(pdf_bytes):
         pdf_date = date_match.group(1)
 
     lines = full_text.split('\n')
-    # Flexible pattern: cam-name [optional note text] 5 numbers
     cam_pattern = re.compile(
         r'^(\d{3})-(.+?)\s+((?:intollerante\s+\S+|[Cc]ane|disabile[^0-9]*|[Gg]luten[^0-9]*|senza\s+lattosio[^0-9]*|Colazione[^0-9]*|\d+\s+cani[^0-9]*)\s+)?(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$'
     )
@@ -45,7 +45,8 @@ def parse_lista_pasti(pdf_bytes):
             cam = m.group(1)
             name_part = m.group(2).strip()
             note = (m.group(3) or '').strip()
-            data[cam] = {
+            rows.append({
+                'cam': cam,
                 'camera_ref': f"{cam}-{name_part}",
                 'note_soggiorno': note,
                 'arrivi_pasti': m.group(4),
@@ -53,8 +54,8 @@ def parse_lista_pasti(pdf_bytes):
                 'partenze_pasti': m.group(6),
                 'colaz': m.group(7),
                 'cena': m.group(8),
-            }
-    return data, pdf_date
+            })
+    return rows, pdf_date
 
 
 def parse_arrivi_sala(pdf_bytes):
@@ -117,11 +118,12 @@ def parse_arrivi_sala(pdf_bytes):
     return data
 
 
-def merge_data(pasti, arrivi):
-    all_cams = sorted(pasti.keys(), key=lambda x: int(x) if x.isdigit() else 9999)
+def merge_data(pasti_rows, arrivi):
+    # pasti_rows is an ordered list; multiple rows can share the same camera number
+    # Sort by camera number preserving original order within same camera
     merged = []
-    for cam in all_cams:
-        p = pasti[cam]
+    for p in sorted(pasti_rows, key=lambda x: (int(x['cam']) if x['cam'].isdigit() else 9999, pasti_rows.index(x))):
+        cam = p['cam']
         a = arrivi.get(cam, {})
         merged.append({
             'camera_ref': p['camera_ref'],
@@ -131,6 +133,7 @@ def merge_data(pasti, arrivi):
             'partenze': p['partenze_pasti'],
             'colaz': p['colaz'],
             'cena': p['cena'],
+            # Arrivi x Sala data — same for both rows when camera shared
             'n': a.get('n', ''),
             'arrivo': a.get('arrivo', ''),
             'partenza': a.get('partenza', ''),
