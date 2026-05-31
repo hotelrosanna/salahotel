@@ -59,6 +59,8 @@ def parse_lista_pasti(pdf_bytes):
 
 def parse_arrivi_sala(pdf_bytes):
     data = {}
+    # Collect ALL rows as list (same camera can appear multiple times)
+    all_rows = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
@@ -67,20 +69,51 @@ def parse_arrivi_sala(pdf_bytes):
                     if row and len(row) == 13:
                         if row[0] and str(row[0]).startswith('BN') and row[1]:
                             cam = str(row[1]).strip()
-                            if cam:
-                                data[cam] = {
-                                    'n_pren': row[0] or '',
-                                    'n': row[3] or '',
-                                    'arrivo': row[4] or '',
-                                    'partenza': row[5] or '',
-                                    'ad': row[6] or '',
-                                    'b': row[7] or '',
-                                    'b_0_1': row[8] or '',
-                                    'b_2_4': row[9] or '',
-                                    'b_5_7': row[10] or '',
-                                    'b_8_11': row[11] or '',
-                                    'tariffa': row[12] or '',
-                                }
+                            pren = str(row[0]).strip()
+                            arrivo_raw = str(row[4] or '')
+                            is_camera_change = arrivo_raw.startswith('\u21b3')
+                            arrivo_clean = arrivo_raw.lstrip('\u21b3').strip()
+                            all_rows.append({
+                                'cam': cam,
+                                'n_pren': pren,
+                                'n': str(row[3] or ''),
+                                'arrivo': arrivo_clean,
+                                'partenza': str(row[5] or ''),
+                                'ad': str(row[6] or ''),
+                                'b': str(row[7] or ''),
+                                'b_0_1': str(row[8] or ''),
+                                'b_2_4': str(row[9] or ''),
+                                'b_5_7': str(row[10] or ''),
+                                'b_8_11': str(row[11] or ''),
+                                'tariffa': str(row[12] or ''),
+                                'camera_change': is_camera_change,
+                            })
+
+    # Identify booking numbers that have a camera-change entry (new camera)
+    # These bookings have an old-camera row that should be excluded
+    change_prens = {r['n_pren'] for r in all_rows if r['camera_change']}
+
+    # For camera-change rows, copy ad/b from the corresponding old-camera row (same pren)
+    for r in all_rows:
+        if r['camera_change']:
+            for other in all_rows:
+                if other['n_pren'] == r['n_pren'] and not other['camera_change'] and other['cam'] != r['cam']:
+                    r['ad'] = other['ad']
+                    r['b'] = other['b']
+                    r['b_0_1'] = other['b_0_1']
+                    r['b_2_4'] = other['b_2_4']
+                    r['b_5_7'] = other['b_5_7']
+                    r['b_8_11'] = other['b_8_11']
+                    break
+
+    # Build final dict by camera: skip old-camera rows of a camera-change booking
+    for r in all_rows:
+        is_old_cam_row = (not r['camera_change']) and (r['n_pren'] in change_prens)
+        if is_old_cam_row:
+            continue  # skip — this booking is now in a different camera
+        cam = r['cam']
+        data[cam] = {k: v for k, v in r.items() if k != 'cam'}
+
     return data
 
 
