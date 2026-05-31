@@ -223,26 +223,19 @@ def generate_pdf(merged, data_str):
 
     ARRIVE_COLOR  = colors.HexColor('#e8f5e9')  # light green = arrivals today
     DEPART_COLOR  = colors.HexColor('#fff3e0')  # light orange = departures today
-    NOTE_COLOR    = colors.HexColor('#fce4ec')  # light pink = has dietary notes
-    ALT_COLOR     = colors.HexColor('#f5f9ff')  # subtle alternating
     WHITE         = colors.white
 
     for i, r in enumerate(merged):
         # Determine row background
         is_arrival   = r['arrivi'] not in ('', '0')
         is_departure = r['partenze'] not in ('', '0')
-        has_note     = bool(r['note_soggiorno'])
 
         if is_arrival:
             bg = ARRIVE_COLOR
         elif is_departure:
             bg = DEPART_COLOR
-        elif has_note:
-            bg = NOTE_COLOR
-        elif i % 2 == 0:
-            bg = WHITE
         else:
-            bg = ALT_COLOR
+            bg = WHITE
 
         row_colors.append((i + 1, bg))  # +1 for header
 
@@ -252,9 +245,9 @@ def generate_pdf(merged, data_str):
                 return d[:5]  # keep dd/mm only
             return d or ''
 
-        # Note cell
+        # Note cell - plain style, no special color
         note_text = r['note_soggiorno']
-        note_cell = n(note_text) if note_text else h('')
+        note_cell = h(note_text) if note_text else h('')
 
         def num(v):
             """Show number only if > 0, else dash"""
@@ -338,8 +331,9 @@ def generate_pdf(merged, data_str):
         # Totals row
         ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#e3eaf4')),
         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#0d1f3a')),
-        # Align numbers center
+        # Align center all columns except camera (0) and note (1)
         ('ALIGN', (2, 1), (-1, -1), 'CENTER'),
+        ('ALIGN', (0, 1), (1, -1), 'LEFT'),
     ])
 
     # Apply row background colors
@@ -364,7 +358,6 @@ def generate_pdf(merged, data_str):
     legend_items = [
         ('<font color="#2e7d32">■</font> Arrivo oggi', ''),
         ('<font color="#e65100">■</font> Partenza oggi', ''),
-        ('<font color="#b71c1c">■</font> Note dietetiche / allergie', ''),
         ('  |  Date mostrate come gg/mm  |  Trattino (-) = zero', ''),
     ]
     leg_text = '   '.join([l[0] for l in legend_items])
