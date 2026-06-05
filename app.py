@@ -59,64 +59,102 @@ def parse_lista_pasti(pdf_bytes):
 
 
 def parse_arrivi_sala(pdf_bytes):
-    data = {}
-    # Collect ALL rows as list (same camera can appear multiple times)
+    """
+    Parse Arrivi x Sala PDF.
+    Returns a dict keyed by camera number.
+
+    Key rules:
+    - Same camera can appear in multiple tables (arrivi, in-casa, partenze sections)
+    - Camera-change rows are marked with ↳ in the arrivo date
+    - When the same camera has multiple rows with DIFFERENT booking numbers,
+      prefer the row with the later departure date (the guest who stays longer)
+    - The old-camera row of a camera-change booking (same pren as a ↳ row,
+      different camera) is excluded entirely
+    """
+    from datetime import datetime
+
+    def parse_date(s):
+        s = (s or '').strip().lstrip('\u21b3').strip()
+        try:
+            return datetime.strptime(s, '%d/%m/%Y')
+        except Exception:
+            return None
+
     all_rows = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
+            for table in page.extract_tables():
                 for row in table:
-                    if row and len(row) == 13:
-                        if row[0] and str(row[0]).startswith('BN') and row[1]:
-                            cam = str(row[1]).strip()
-                            pren = str(row[0]).strip()
-                            arrivo_raw = str(row[4] or '')
-                            is_camera_change = arrivo_raw.startswith('\u21b3')
-                            arrivo_clean = arrivo_raw.lstrip('\u21b3').strip()
-                            all_rows.append({
-                                'cam': cam,
-                                'n_pren': pren,
-                                'n': str(row[3] or ''),
-                                'arrivo': arrivo_clean,
-                                'partenza': str(row[5] or ''),
-                                'ad': str(row[6] or ''),
-                                'b': str(row[7] or ''),
-                                'b_0_1': str(row[8] or ''),
-                                'b_2_4': str(row[9] or ''),
-                                'b_5_7': str(row[10] or ''),
-                                'b_8_11': str(row[11] or ''),
-                                'tariffa': str(row[12] or ''),
-                                'camera_change': is_camera_change,
-                            })
+                    if not (row and len(row) == 13):
+                        continue
+                    if not (row[0] and str(row[0]).startswith('BN') and row[1]):
+                        continue
+                    cam   = str(row[1]).strip()
+                    pren  = str(row[0]).strip()
+                    arrivo_raw = str(row[4] or '')
+                    is_cambio  = arrivo_raw.startswith('\u21b3')
+                    arrivo_clean = arrivo_raw.lstrip('\u21b3').strip()
 
-    # Identify booking numbers that have a camera-change entry (new camera)
-    # These bookings have an old-camera row that should be excluded
-    change_prens = {r['n_pren'] for r in all_rows if r['camera_change']}
+                    all_rows.append({
+                        'cam':     cam,
+                        'n_pren':  pren,
+                        'n':       str(row[3] or ''),
+                        'arrivo':  arrivo_clean,
+                        'partenza':str(row[5] or ''),
+                        'ad':      str(row[6] or ''),
+                        'b':       str(row[7] or ''),
+                        'b_0_1':   str(row[8] or ''),
+                        'b_2_4':   str(row[9] or ''),
+                        'b_5_7':   str(row[10] or ''),
+                        'b_8_11':  str(row[11] or ''),
+                        'tariffa': str(row[12] or ''),
+                        'cambio':  is_cambio,
+                    })
 
-    # For camera-change rows, copy ad/b from the corresponding old-camera row (same pren)
+    # Step 1 — for cambio-camera rows, copy ad/b from the matching old-camera row
+    cambio_prens = {r['n_pren'] for r in all_rows if r['cambio']}
     for r in all_rows:
-        if r['camera_change']:
+        if r['cambio']:
             for other in all_rows:
-                if other['n_pren'] == r['n_pren'] and not other['camera_change'] and other['cam'] != r['cam']:
-                    r['ad'] = other['ad']
-                    r['b'] = other['b']
+                if other['n_pren'] == r['n_pren'] and not other['cambio']:
+                    r['ad']    = other['ad']
+                    r['b']     = other['b']
                     r['b_0_1'] = other['b_0_1']
                     r['b_2_4'] = other['b_2_4']
                     r['b_5_7'] = other['b_5_7']
-                    r['b_8_11'] = other['b_8_11']
+                    r['b_8_11']= other['b_8_11']
                     break
 
-    # Build final dict by camera: skip old-camera rows of a camera-change booking
+    # Step 2 — remove old-camera rows of cambio bookings
+    # (same pren as a cambio row, but different camera = the room they left)
+    cambio_new_cams = {r['cam'] for r in all_rows if r['cambio']}
+    filtered = []
     for r in all_rows:
-        is_old_cam_row = (not r['camera_change']) and (r['n_pren'] in change_prens)
-        if is_old_cam_row:
-            continue  # skip — this booking is now in a different camera
-        cam = r['cam']
-        data[cam] = {k: v for k, v in r.items() if k != 'cam'}
+        if r['n_pren'] in cambio_prens and not r['cambio']:
+            # This is the old-camera row for a cambio booking — drop it
+            continue
+        filtered.append(r)
+
+    # Step 3 — for cameras that still have multiple rows (different bookings),
+    # keep the one with the LATEST departure date (the guest who stays)
+    from collections import defaultdict
+    by_cam = defaultdict(list)
+    for r in filtered:
+        by_cam[r['cam']].append(r)
+
+    data = {}
+    for cam, rows in by_cam.items():
+        if len(rows) == 1:
+            data[cam] = rows[0]
+        else:
+            # Pick the row with the latest partenza
+            def sort_key(r):
+                d = parse_date(r['partenza'])
+                return d if d else datetime.min
+            best = max(rows, key=sort_key)
+            data[cam] = best
 
     return data
-
 
 def merge_data(pasti_rows, arrivi):
     # pasti_rows is an ordered list; multiple rows can share the same camera number
