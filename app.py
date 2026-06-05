@@ -97,6 +97,7 @@ def parse_arrivi_sala(pdf_bytes):
 
                     all_rows.append({
                         'cam':     cam,
+                        'cam_ref': str(row[2] or ''),  # guest name for matching
                         'n_pren':  pren,
                         'n':       str(row[3] or ''),
                         'arrivo':  arrivo_clean,
@@ -135,34 +136,60 @@ def parse_arrivi_sala(pdf_bytes):
             continue
         filtered.append(r)
 
-    # Step 3 — for cameras that still have multiple rows (different bookings),
-    # keep the one with the LATEST departure date (the guest who stays)
+    # Step 3 — group remaining rows by camera, keep ALL (merge_data will match by name)
     from collections import defaultdict
     by_cam = defaultdict(list)
     for r in filtered:
         by_cam[r['cam']].append(r)
 
-    data = {}
-    for cam, rows in by_cam.items():
-        if len(rows) == 1:
-            data[cam] = rows[0]
-        else:
-            # Pick the row with the latest partenza
-            def sort_key(r):
-                d = parse_date(r['partenza'])
-                return d if d else datetime.min
-            best = max(rows, key=sort_key)
-            data[cam] = best
+    return dict(by_cam)  # cam -> list of row dicts
 
-    return data
+def _name_similarity(name_a, name_b):
+    """Check if two name strings share at least one significant word (case-insensitive)."""
+    if not name_a or not name_b:
+        return False
+    # Strip leading symbols like ✭
+    clean = lambda s: s.strip().lstrip('\u2605').strip().lower()
+    words_a = set(clean(name_a).split())
+    words_b = set(clean(name_b).split())
+    # Ignore very short words
+    sig_a = {w for w in words_a if len(w) > 2}
+    sig_b = {w for w in words_b if len(w) > 2}
+    return bool(sig_a & sig_b)
+
 
 def merge_data(pasti_rows, arrivi):
-    # pasti_rows is an ordered list; multiple rows can share the same camera number
-    # Sort by camera number preserving original order within same camera
+    """
+    pasti_rows: ordered list of dicts with 'cam' key (multiple rows per cam possible)
+    arrivi: dict cam -> list of row dicts
+    For each pasti row, find the best matching arrivi row by name similarity.
+    Fallback: pick arrivi row with latest departure.
+    """
+    from datetime import datetime
+
+    def parse_date(s):
+        try:
+            return datetime.strptime((s or '').strip(), '%d/%m/%Y')
+        except Exception:
+            return datetime.min
+
     merged = []
     for p in sorted(pasti_rows, key=lambda x: (int(x['cam']) if x['cam'].isdigit() else 9999, pasti_rows.index(x))):
         cam = p['cam']
-        a = arrivi.get(cam, {})
+        cam_rows = arrivi.get(cam, [])  # list of arrivi rows for this camera
+
+        # Try to match by name similarity first
+        a = {}
+        if cam_rows:
+            pasti_name = p['camera_ref'].split('-', 1)[1] if '-' in p['camera_ref'] else ''
+            # Look for name match
+            matched = next((r for r in cam_rows if _name_similarity(pasti_name, r.get('cam_ref', ''))), None)
+            if matched:
+                a = matched
+            else:
+                # Fallback: pick row with latest departure
+                a = max(cam_rows, key=lambda r: parse_date(r.get('partenza', '')))
+
         merged.append({
             'camera_ref': p['camera_ref'],
             'note_soggiorno': p['note_soggiorno'],
@@ -171,7 +198,6 @@ def merge_data(pasti_rows, arrivi):
             'partenze': p['partenze_pasti'],
             'colaz': p['colaz'],
             'cena': p['cena'],
-            # Arrivi x Sala data — same for both rows when camera shared
             'n': a.get('n', ''),
             'arrivo': a.get('arrivo', ''),
             'partenza': a.get('partenza', ''),
