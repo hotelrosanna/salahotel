@@ -189,7 +189,7 @@ def merge_data(pasti_rows, arrivi):
 # PDF GENERATION
 # ─────────────────────────────────────────────
 
-def generate_pdf(merged, data_str):
+def generate_pdf(merged, data_str, table_groups=None):
     buf = io.BytesIO()
     PAGE = landscape(A4)
     W, H = PAGE
@@ -304,6 +304,25 @@ def generate_pdf(merged, data_str):
     DEPART_COLOR  = colors.HexColor('#fff3e0')  # light orange = departures today
     WHITE         = colors.white
 
+    # Group table colors — up to 8 distinct groups
+    GROUP_COLORS = [
+        colors.HexColor('#1565c0'),  # blu
+        colors.HexColor('#b71c1c'),  # rosso
+        colors.HexColor('#4a148c'),  # viola
+        colors.HexColor('#e65100'),  # arancio scuro
+        colors.HexColor('#006064'),  # teal
+        colors.HexColor('#33691e'),  # verde scuro
+        colors.HexColor('#880e4f'),  # rosa scuro
+        colors.HexColor('#4e342e'),  # marrone
+    ]
+    # Build cam→color index from table_groups
+    cam_group_color = {}
+    if table_groups:
+        for g_idx, group in enumerate(table_groups):
+            col = GROUP_COLORS[g_idx % len(GROUP_COLORS)]
+            for cam in group:
+                cam_group_color[cam.strip()] = col
+
     for i, r in enumerate(merged):
         # Determine row background
         is_arrival   = r['arrivi'] not in ('', '0')
@@ -337,8 +356,18 @@ def generate_pdf(merged, data_str):
             except:
                 return h(v)
 
+        # Camera cell — colored badge if in a group
+        cam_num = r['camera_ref'][:3]
+        group_col = cam_group_color.get(cam_num)
+        if group_col:
+            cam_style = ParagraphStyle('cam_grp', parent=cell_style,
+                fontName='Helvetica-Bold', textColor=colors.white)
+            cam_cell = Paragraph(r['camera_ref'], cam_style)
+        else:
+            cam_cell = h(r['camera_ref'], bold=True)
+
         row = [
-            h(r['camera_ref'], bold=True),
+            cam_cell,
             note_cell,
             num(r['arrivi']),
             num(r['casa']),
@@ -419,6 +448,14 @@ def generate_pdf(merged, data_str):
     for row_idx, bg in row_colors:
         ts.add('BACKGROUND', (0, row_idx), (-1, row_idx), bg)
 
+    # Apply group colors to camera cell (col 0) only
+    for i, r in enumerate(merged):
+        cam_num = r['camera_ref'][:3]
+        group_col = cam_group_color.get(cam_num)
+        if group_col:
+            row_idx = i + 1  # +1 for header
+            ts.add('BACKGROUND', (0, row_idx), (0, row_idx), group_col)
+
     table.setStyle(ts)
 
     # Legend
@@ -434,12 +471,19 @@ def generate_pdf(merged, data_str):
     story.append(Spacer(1, 3*mm))
 
     # Legend
-    legend_items = [
-        ('<font color="#2e7d32">■</font> Arrivo oggi', ''),
-        ('<font color="#e65100">■</font> Partenza oggi', ''),
-        ('  |  Date mostrate come gg/mm  |  Trattino (-) = zero', ''),
+    leg_parts = [
+        '<font color="#2e7d32">■</font> Arrivo oggi',
+        '<font color="#e65100">■</font> Partenza oggi',
     ]
-    leg_text = '   '.join([l[0] for l in legend_items])
+    # Add group legend entries
+    GROUP_HEX = ['#1565c0','#b71c1c','#4a148c','#e65100','#006064','#33691e','#880e4f','#4e342e']
+    if table_groups:
+        for g_idx, group in enumerate(table_groups):
+            hex_col = GROUP_HEX[g_idx % len(GROUP_HEX)]
+            cams_str = ' + '.join(sorted(group))
+            leg_parts.append(f'<font color="{hex_col}">■</font> Tavolo insieme: {cams_str}')
+    leg_parts.append('Date come gg/mm  |  Trattino = zero')
+    leg_text = '   '.join(leg_parts)
     story.append(Paragraph(leg_text, legend_style))
 
     doc.build(story)
@@ -459,161 +503,95 @@ HTML = r"""<!DOCTYPE html>
 <title>Lista Sala — Hotel Rosanna</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: 'Segoe UI', Arial, sans-serif;
-    background: #f0f4f8;
-    color: #1a2e4a;
-    min-height: 100vh;
-  }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; color: #1a2e4a; min-height: 100vh; }
   header {
-    background: #1a2e4a;
-    color: white;
-    padding: 18px 32px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
+    background: #1a2e4a; color: white; padding: 18px 32px;
+    display: flex; align-items: center; gap: 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
   }
   header h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.5px; }
   header span { font-size: 0.85rem; opacity: 0.7; margin-top: 2px; }
   .logo {
-    width: 40px; height: 40px;
-    background: #c8a96e;
-    border-radius: 8px;
+    width: 40px; height: 40px; background: #c8a96e; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     font-size: 1.4rem; font-weight: 800; color: #1a2e4a;
   }
-  main {
-    max-width: 800px;
-    margin: 40px auto;
-    padding: 0 20px;
-  }
+  main { max-width: 800px; margin: 40px auto; padding: 0 20px; }
   .card {
-    background: white;
-    border-radius: 12px;
+    background: white; border-radius: 12px;
     box-shadow: 0 2px 12px rgba(26,46,74,0.09);
-    padding: 32px;
-    margin-bottom: 24px;
+    padding: 32px; margin-bottom: 24px;
   }
   .card h2 {
-    font-size: 1rem;
-    font-weight: 700;
-    color: #1a2e4a;
-    margin-bottom: 20px;
-    padding-bottom: 10px;
-    border-bottom: 2px solid #e3eaf4;
+    font-size: 1rem; font-weight: 700; color: #1a2e4a;
+    margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #e3eaf4;
   }
-  .upload-area {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    margin-bottom: 24px;
-  }
+  .upload-area { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
   .upload-box {
-    border: 2px dashed #b0bec5;
-    border-radius: 10px;
-    padding: 24px 16px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    position: relative;
-    background: #f8fafc;
+    border: 2px dashed #b0bec5; border-radius: 10px; padding: 24px 16px;
+    text-align: center; cursor: pointer; transition: all 0.2s;
+    position: relative; background: #f8fafc;
   }
-  .upload-box:hover, .upload-box.drag-over {
-    border-color: #1a2e4a;
-    background: #e8eef6;
-  }
-  .upload-box.has-file {
-    border-color: #2e7d32;
-    background: #f1f8f2;
-  }
-  .upload-box input[type=file] {
-    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
-  }
+  .upload-box:hover, .upload-box.drag-over { border-color: #1a2e4a; background: #e8eef6; }
+  .upload-box.has-file { border-color: #2e7d32; background: #f1f8f2; }
+  .upload-box input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
   .upload-icon { font-size: 2rem; margin-bottom: 8px; }
-  .upload-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #1a2e4a;
-    margin-bottom: 6px;
-  }
+  .upload-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #1a2e4a; margin-bottom: 6px; }
   .upload-hint { font-size: 0.75rem; color: #78909c; }
-  .upload-filename {
-    font-size: 0.75rem;
-    color: #2e7d32;
-    font-weight: 600;
-    margin-top: 6px;
-    word-break: break-all;
+  .upload-filename { font-size: 0.75rem; color: #2e7d32; font-weight: 600; margin-top: 6px; word-break: break-all; }
+
+  /* Groups section */
+  .groups-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+  .group-row {
+    display: flex; align-items: center; gap: 10px;
   }
+  .group-badge {
+    width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;
+  }
+  .group-input {
+    flex: 1; border: 1.5px solid #cfd8dc; border-radius: 8px;
+    padding: 8px 12px; font-size: 0.88rem; color: #1a2e4a;
+    font-family: inherit; transition: border-color 0.2s;
+  }
+  .group-input:focus { outline: none; border-color: #1a2e4a; }
+  .group-input::placeholder { color: #90a4ae; }
+  .btn-remove {
+    background: none; border: none; cursor: pointer; color: #90a4ae;
+    font-size: 1.1rem; padding: 4px; line-height: 1;
+    transition: color 0.15s;
+  }
+  .btn-remove:hover { color: #c62828; }
+  .btn-add-group {
+    background: none; border: 1.5px dashed #b0bec5; border-radius: 8px;
+    padding: 8px 16px; color: #546e7a; font-size: 0.82rem;
+    cursor: pointer; transition: all 0.2s; font-family: inherit;
+  }
+  .btn-add-group:hover { border-color: #1a2e4a; color: #1a2e4a; }
+  .groups-hint { font-size: 0.75rem; color: #90a4ae; margin-top: 8px; }
+
   .btn-generate {
-    width: 100%;
-    background: #1a2e4a;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    padding: 16px;
-    font-size: 1rem;
-    font-weight: 700;
-    cursor: pointer;
-    letter-spacing: 0.5px;
-    transition: background 0.2s, transform 0.1s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-  }
-  .btn-generate:hover:not(:disabled) {
-    background: #243f66;
-    transform: translateY(-1px);
-  }
-  .btn-generate:disabled {
-    background: #b0bec5;
-    cursor: not-allowed;
-    transform: none;
-  }
-  .legend {
-    display: flex;
-    gap: 20px;
-    flex-wrap: wrap;
-    margin-top: 16px;
-  }
-  .legend-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.78rem;
-    color: #546e7a;
-  }
-  .dot {
-    width: 12px; height: 12px;
-    border-radius: 3px;
-    flex-shrink: 0;
-  }
-  .status {
+    width: 100%; background: #1a2e4a; color: white; border: none;
+    border-radius: 10px; padding: 16px; font-size: 1rem; font-weight: 700;
+    cursor: pointer; letter-spacing: 0.5px; transition: background 0.2s, transform 0.1s;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
     margin-top: 20px;
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    font-weight: 500;
-    display: none;
+  }
+  .btn-generate:hover:not(:disabled) { background: #243f66; transform: translateY(-1px); }
+  .btn-generate:disabled { background: #b0bec5; cursor: not-allowed; transform: none; }
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #546e7a; }
+  .dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+  .status {
+    margin-top: 20px; padding: 12px 16px; border-radius: 8px;
+    font-size: 0.85rem; font-weight: 500; display: none;
   }
   .status.error { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; display: block; }
   .status.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; display: block; }
   .status.loading { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; display: block; }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .checkmark { font-size: 1.1rem; }
-  footer {
-    text-align: center;
-    font-size: 0.72rem;
-    color: #90a4ae;
-    padding: 20px;
-  }
-  @media (max-width: 520px) {
-    .upload-area { grid-template-columns: 1fr; }
-  }
+  footer { text-align: center; font-size: 0.72rem; color: #90a4ae; padding: 20px; }
+  @media (max-width: 520px) { .upload-area { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -644,11 +622,19 @@ HTML = r"""<!DOCTYPE html>
         <div class="upload-filename" id="name2"></div>
       </div>
     </div>
+  </div>
 
+  <div class="card">
+    <h2>🍽️ Camere allo stesso tavolo</h2>
+    <div class="groups-list" id="groupsList"></div>
+    <button class="btn-add-group" onclick="addGroup()">+ Aggiungi gruppo tavolo</button>
+    <p class="groups-hint">Inserisci i numeri di camera separati da virgola o spazio. Es: <b>203, 204</b> &nbsp;·&nbsp; <b>307 309 311</b></p>
+  </div>
+
+  <div class="card">
     <button class="btn-generate" id="btnGen" onclick="genera()" disabled>
       <span>📄</span> Genera Lista Finale PDF
     </button>
-
     <div class="status" id="status"></div>
   </div>
 
@@ -657,8 +643,9 @@ HTML = r"""<!DOCTYPE html>
     <div class="legend">
       <div class="legend-item"><div class="dot" style="background:#c8e6c9"></div> Arrivo oggi</div>
       <div class="legend-item"><div class="dot" style="background:#ffe0b2"></div> Partenza oggi</div>
-      <div class="legend-item"><div class="dot" style="background:#fce4ec"></div> Note dietetiche / allergie</div>
-      <div class="legend-item"><div class="dot" style="background:#f5f9ff"></div> In casa (riga alternata)</div>
+      <div class="legend-item"><div class="dot" style="background:#1565c0"></div> Tavolo 1 (colore camera)</div>
+      <div class="legend-item"><div class="dot" style="background:#b71c1c"></div> Tavolo 2 (colore camera)</div>
+      <div class="legend-item"><div class="dot" style="background:#4a148c"></div> Tavolo 3 (colore camera)</div>
     </div>
   </div>
 </main>
@@ -666,6 +653,42 @@ HTML = r"""<!DOCTYPE html>
 <footer>Hotel Rosanna &mdash; Uso interno riservato</footer>
 
 <script>
+const GROUP_COLORS = ['#1565c0','#b71c1c','#4a148c','#e65100','#006064','#33691e','#880e4f','#4e342e'];
+let groupCount = 0;
+
+function addGroup(initialValue) {
+  const list = document.getElementById('groupsList');
+  const idx = groupCount++;
+  const color = GROUP_COLORS[idx % GROUP_COLORS.length];
+  const row = document.createElement('div');
+  row.className = 'group-row';
+  row.dataset.idx = idx;
+  row.innerHTML = `
+    <div class="group-badge" style="background:${color}"></div>
+    <input class="group-input" type="text" placeholder="Es: 203, 204" value="${initialValue || ''}">
+    <button class="btn-remove" onclick="removeGroup(this)" title="Rimuovi">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function removeGroup(btn) {
+  btn.closest('.group-row').remove();
+}
+
+function getGroups() {
+  const rows = document.querySelectorAll('.group-row');
+  const groups = [];
+  rows.forEach(row => {
+    const val = row.querySelector('input').value.trim();
+    if (val) {
+      // split by comma or space, filter empty, pad to 3 digits
+      const cams = val.split(/[\s,]+/).filter(Boolean).map(c => c.padStart(3, '0'));
+      if (cams.length > 0) groups.push(cams);
+    }
+  });
+  return groups;
+}
+
 function fileSelected(n) {
   const f = document.getElementById('file'+n).files[0];
   if (f) {
@@ -681,7 +704,6 @@ function checkReady() {
   document.getElementById('btnGen').disabled = !(f1 && f2);
 }
 
-// Drag and drop
 [1, 2].forEach(n => {
   const box = document.getElementById('box'+n);
   box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag-over'); });
@@ -713,10 +735,10 @@ async function genera() {
   const fd = new FormData();
   fd.append('lista_pasti', f1);
   fd.append('arrivi_sala', f2);
+  fd.append('groups', JSON.stringify(getGroups()));
 
   try {
     const resp = await fetch('/genera', { method: 'POST', body: fd });
-
     if (!resp.ok) {
       const err = await resp.json();
       status.className = 'status error';
@@ -724,19 +746,15 @@ async function genera() {
       btn.disabled = false;
       return;
     }
-
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
-
-    // Auto-open for printing
     const a = document.createElement('a');
     const today = new Date().toLocaleDateString('it-IT').replace(/\//g, '-');
     a.href = url;
     a.download = `lista_sala_${today}.pdf`;
     a.click();
-
     status.className = 'status success';
-    status.innerHTML = '<span class="checkmark">✅</span> PDF generato e scaricato! Pronto per la stampa.';
+    status.innerHTML = '<span>✅</span> PDF generato e scaricato! Pronto per la stampa.';
   } catch(e) {
     status.className = 'status error';
     status.textContent = '❌ Errore di rete: ' + e.message;
@@ -776,10 +794,18 @@ def genera():
 
         merged = merge_data(pasti, arrivi)
 
+        # Parse table groups from form
+        import json as _json
+        groups_raw = request.form.get('groups', '[]')
+        try:
+            table_groups = _json.loads(groups_raw)
+        except Exception:
+            table_groups = []
+
         # Use date from PDF, fallback to today if not found
         data_str = pdf_date if pdf_date else datetime.now().strftime('%d/%m/%Y')
         file_date = data_str.replace('/', '') if pdf_date else datetime.now().strftime('%Y%m%d')
-        pdf_buf = generate_pdf(merged, data_str)
+        pdf_buf = generate_pdf(merged, data_str, table_groups=table_groups)
 
         return send_file(
             pdf_buf,
