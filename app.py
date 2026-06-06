@@ -20,7 +20,6 @@ app = Flask(__name__)
 # ─────────────────────────────────────────────
 
 def parse_lista_pasti(pdf_bytes):
-    # Returns an ORDERED LIST to support multiple guests per camera
     rows = []
     pdf_date = None
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -29,32 +28,115 @@ def parse_lista_pasti(pdf_bytes):
             t = page.extract_text()
             if t:
                 full_text += t + "\n"
-    # Extract date from PDF header
+
     date_match = re.search(r'Data dal (\d{2}/\d{2}/\d{4})', full_text)
     if date_match:
         pdf_date = date_match.group(1)
 
-    lines = full_text.split('\n')
-    cam_pattern = re.compile(
-        r'^(\d{3})-(.+?)\s+((?:intollerante\s+\S+|[Cc]ane|disabile[^0-9]*|[Gg]luten[^0-9]*|senza\s+lattosio[^0-9]*|Colazione[^0-9]*|\d+\s+cani[^0-9]*)\s+)?(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$'
+    lines = [l.strip() for l in full_text.split('\n')]
+
+    # Lines to skip
+    skip_prefixes = ('Data dal','Tipo','Individuale','Totale','Lista pasti',
+                     'LORENZO','Informazioni','1/','2/')
+
+    cam_start   = re.compile(r'^(\d{3})-(.+)')
+    nums_suffix = re.compile(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$')
+    note_kw     = re.compile(
+        r'\s+(intollerante\s+\S+|\d+\s+cani|[Cc]ane|disabile[^0-9]*|'
+        r'[Gg]luten[^0-9]*|senza\s+lattosio[^0-9]*|Colazione[^0-9]*)$'
     )
-    for line in lines:
-        line = line.strip()
-        m = cam_pattern.match(line)
-        if m:
-            cam = m.group(1)
-            name_part = m.group(2).strip()
-            note = (m.group(3) or '').strip()
-            rows.append({
-                'cam': cam,
-                'camera_ref': f"{cam}-{name_part}",
-                'note_soggiorno': note,
-                'arrivi_pasti': m.group(4),
-                'casa': m.group(5),
-                'partenze_pasti': m.group(6),
-                'colaz': m.group(7),
-                'cena': m.group(8),
-            })
+
+    def is_skip(line):
+        return not line or any(line.startswith(p) for p in skip_prefixes)
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if is_skip(line):
+            i += 1
+            continue
+
+        m_start = cam_start.match(line)
+        if not m_start:
+            i += 1
+            continue
+
+        cam  = m_start.group(1)
+        rest = m_start.group(2).strip()
+
+        # Check if numbers are on this same line
+        m_nums = nums_suffix.search(rest)
+        if m_nums:
+            name_part = rest[:m_nums.start()].strip()
+            i += 1
+        else:
+            # Numbers on a following line; next non-skip line should be just numbers
+            # (or name-continuation + numbers)
+            j = i + 1
+            while j < len(lines) and is_skip(lines[j]):
+                j += 1
+            if j < len(lines):
+                next_line = lines[j]
+                m_nums = nums_suffix.search(next_line)
+                if m_nums:
+                    extra_name = next_line[:m_nums.start()].strip()
+                    name_part = (rest + ' ' + extra_name).strip() if extra_name else rest
+                    i = j + 1
+                else:
+                    # Can't find numbers — skip this entry
+                    i += 1
+                    continue
+            else:
+                i += 1
+                continue
+
+        # Separate inline note keyword from name
+        note_inline = ''
+        m_note = note_kw.search(name_part)
+        if m_note:
+            note_inline = name_part[m_note.start():].strip()
+            name_part   = name_part[:m_note.start()].strip()
+
+        # Collect note lines that follow (until next camera line or skip line)
+        note_lines = [note_inline] if note_inline else []
+        while i < len(lines):
+            peek = lines[i]
+            if is_skip(peek):
+                i += 1
+                continue
+            if cam_start.match(peek):
+                break  # next camera entry — stop
+            if nums_suffix.search(peek):
+                i += 1
+                continue  # stray numbers line — skip
+            # Single word with no digits = likely a name fragment split across lines, not a note
+            if re.match(r'^[A-Za-zÀ-ÿ]+$', peek):
+                i += 1
+                continue
+            note_lines.append(peek)
+            i += 1
+
+        note_text = ' '.join(note_lines).strip()
+
+        rows.append({
+            'cam':            cam,
+            'camera_ref':     f"{cam}-{name_part}",
+            'note_soggiorno': note_text,
+            'arrivi_pasti':   m_nums.group(1),
+            'casa':           m_nums.group(2),
+            'partenze_pasti': m_nums.group(3),
+            'colaz':          m_nums.group(4),
+            'cena':           m_nums.group(5),
+        })
+
+    # Post-process: for same camera consecutive rows, merge trailing note of first
+    # into leading note of second (handles notes split across the boundary)
+    for idx in range(len(rows) - 1):
+        if rows[idx]['cam'] == rows[idx+1]['cam']:
+            combined = ' '.join(filter(None, [rows[idx]['note_soggiorno'], rows[idx+1]['note_soggiorno']])).strip()
+            rows[idx]['note_soggiorno']   = ''
+            rows[idx+1]['note_soggiorno'] = combined
+
     return rows, pdf_date
 
 
@@ -382,9 +464,12 @@ def generate_pdf(merged, data_str, table_groups=None):
             except:
                 return h(v)
 
-        # Camera cell — colored badge if in a group
+        # Camera cell — colored badge if in a group AND not a pure departure
         cam_num = r['camera_ref'][:3]
-        group_col = cam_group_color.get(cam_num)
+        is_only_departure = (r['partenze'] not in ('', '0') and
+                             r['arrivi'] in ('', '0') and
+                             r['casa'] in ('', '0'))
+        group_col = cam_group_color.get(cam_num) if not is_only_departure else None
         if group_col:
             cam_style = ParagraphStyle('cam_grp', parent=cell_style,
                 fontName='Helvetica-Bold', textColor=colors.white)
@@ -474,10 +559,13 @@ def generate_pdf(merged, data_str, table_groups=None):
     for row_idx, bg in row_colors:
         ts.add('BACKGROUND', (0, row_idx), (-1, row_idx), bg)
 
-    # Apply group colors to camera cell (col 0) only
+    # Apply group colors to camera cell (col 0) only — skip pure departures
     for i, r in enumerate(merged):
         cam_num = r['camera_ref'][:3]
-        group_col = cam_group_color.get(cam_num)
+        is_only_departure = (r['partenze'] not in ('', '0') and
+                             r['arrivi'] in ('', '0') and
+                             r['casa'] in ('', '0'))
+        group_col = cam_group_color.get(cam_num) if not is_only_departure else None
         if group_col:
             row_idx = i + 1  # +1 for header
             ts.add('BACKGROUND', (0, row_idx), (0, row_idx), group_col)
