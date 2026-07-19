@@ -107,10 +107,14 @@ def parse_lista_pasti(pdf_bytes):
 
         # Extract inline note keywords from the end of name_and_note
         # These are short words/phrases that are NOT part of the guest name
+        # Note keywords — ordered so "N keyword" variants come before bare keywords
         note_inline_pattern = re.compile(
-            r'\s+(intollerante\s+\S+|\d+\s+cani|cane|[Cc]ane|disabile[^0-9]*'
-            r'|[Gg]luten[^0-9]*|senza\s+lattosio[^0-9]*|Colazione[^0-9]*'
-            r'|[Bb][Ll][Uu])\s*$'
+            r'\s+(intollerante\s+\S+'
+            r'|\d+\s+cani|\d+\s+celiac[oi]|\d+\s+allergi[a-z]*'
+            r'|cani|cane|celiac[oi]|allergi[a-z]*|vegano?|vegetariano?'
+            r'|disabile[^0-9]*|[Gg]luten[^0-9]*|senza\s+lattosio[^0-9]*|Colazione[^0-9]*'
+            r'|[Bb][Ll][Uu])\s*$',
+            re.IGNORECASE
         )
         note_inline = ''
         m_note = note_inline_pattern.search(name_and_note)
@@ -130,8 +134,8 @@ def parse_lista_pasti(pdf_bytes):
             if nums_suffix.search(peek):
                 i += 1
                 continue
-            # Single alphabetic word = likely a name fragment, not a note
-            if re.match(r'^[A-Za-zÀ-ÿ]+$', peek):
+            # Single word/name fragment (letters, commas, dots) = name continuation, not a note
+            if re.match(r'^[A-Za-zÀ-ÿ,.\'\-]+$', peek):
                 i += 1
                 continue
             note_lines.append(peek)
